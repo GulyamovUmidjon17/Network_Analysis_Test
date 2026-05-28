@@ -4,9 +4,7 @@
 ║       Terminal network monitoring dashboard          ║
 ╚══════════════════════════════════════════════════════╝
 """
-
 from __future__ import annotations
-
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Deque, Dict, Optional, Tuple
-
 import requests
 from rich.box import MINIMAL, SIMPLE_HEAD
 from rich.columns import Columns
@@ -29,9 +26,7 @@ from rich import rule
 # ── suppress verbose urllib3 warnings ────────────────────────────────────────
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -42,9 +37,7 @@ MAX_HISTORY: int = 12
 MAX_WORKERS: int = 20
 HTTP_TIMEOUT: float = 3.0
 ICMP_TIMEOUT: float = 1.5
-
 SPARKLINE = "▁▂▃▄▅▆▇█"
-
 SHRIMP_ART = r"""
 ⠀⠀⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⣀⣤⣤⣀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⢀⣀⡙⠻⢶⣶⣦⣴⣶⣶⣶⠾⠛⠛⠋⠉⠉⠉⠉⠙⠃⠀⠀⠀⠀⠀
@@ -65,7 +58,6 @@ SHRIMP_ART = r"""
               SHRIMP NODE
          NETWORK OBSERVATION
 """
-
 # ── colour palette ────────────────────────────────────────────────────────
 # ── ULTRA BRIGHT CYBER PALETTE ────────────────────────────────────────────
 
@@ -74,7 +66,6 @@ C_WARN    = "bright_yellow"
 C_SLOW    = "bright_cyan"
 C_ERROR   = "bright_red"
 C_TIMEOUT = "bright_magenta"
-
 C_DIM     = "bright_white"
 C_TITLE   = "bright_cyan"
 C_BORDER  = "bright_blue"
@@ -83,7 +74,6 @@ C_TIME    = "bright_white"
 # ── latency thresholds (ms) ───────────────────────────────────────────────
 LAT_FAST   = 80
 LAT_MEDIUM = 200
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA MODEL
@@ -96,7 +86,6 @@ class Status(str, Enum):
     TIMEOUT   = "TIMEOUT"
     ERROR     = "ERROR"
 
-
 STATUS_LABEL: Dict[Status, Tuple[str, str]] = {
     #            rich markup colour   display text
     Status.ONLINE:   (C_OK,      "● ONLINE"),
@@ -106,7 +95,6 @@ STATUS_LABEL: Dict[Status, Tuple[str, str]] = {
     Status.ERROR:    (C_DIM,     "? ERROR"),
 }
 
-
 @dataclass
 class CheckResult:
     name:    str
@@ -114,7 +102,6 @@ class CheckResult:
     status:  Status
     latency: Optional[float]   # ms, None if unreachable
     checked_at: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
-
 
 @dataclass
 class HostStats:
@@ -125,7 +112,6 @@ class HostStats:
     @property
     def uptime(self) -> float:
         return (self.ok / self.total * 100) if self.total else 0.0
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MONITORING TARGETS
@@ -146,7 +132,6 @@ HOSTS: Dict[str, Tuple[str, str]] = {
     "Amazon AWS":    ("https://aws.amazon.com",    "http"),
 }
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # PROBE FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -163,7 +148,6 @@ def _probe_icmp(host: str) -> Tuple[Optional[float], Status]:
         return _probe_http(f"http://{host}")
     except Exception:
         return None, Status.ERROR
-
 
 def _probe_http(url: str) -> Tuple[Optional[float], Status]:
     try:
@@ -190,7 +174,6 @@ def _probe_http(url: str) -> Tuple[Optional[float], Status]:
     except Exception:
         return None, Status.ERROR
 
-
 def probe(name: str, address: str, mode: str) -> CheckResult:
     """Dispatch to the right probe and return a normalised result."""
     if mode == "icmp":
@@ -200,13 +183,11 @@ def probe(name: str, address: str, mode: str) -> CheckResult:
 
     return CheckResult(name=name, address=address, status=status, latency=latency)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # STATE
 # ═══════════════════════════════════════════════════════════════════════════
 
 host_stats: Dict[str, HostStats] = defaultdict(HostStats)
-
 
 def record(result: CheckResult) -> None:
     s = host_stats[result.name]
@@ -215,7 +196,6 @@ def record(result: CheckResult) -> None:
         s.ok += 1
     if result.latency is not None:
         s.history.append(result.latency)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # RENDERING HELPERS
@@ -232,11 +212,9 @@ def _latency_text(latency: Optional[float]) -> Text:
         colour = C_ERROR
     return Text(f"{latency:>7.1f} ms", style=colour)
 
-
 def _status_text(status: Status) -> Text:
     colour, label = STATUS_LABEL[status]
     return Text(label, style=f"bold {colour}" if status == Status.ONLINE else colour)
-
 
 def _sparkline(history: Deque[float]) -> str:
     if not history:
@@ -246,14 +224,12 @@ def _sparkline(history: Deque[float]) -> str:
     bars = [SPARKLINE[int((v - mn) / span * (len(SPARKLINE) - 1))] for v in history]
     return " ".join(bars)
 
-
 def _uptime_text(value: float) -> Text:
     if value >= 99:
         return Text(f"{value:>5.1f}%", style=C_OK)
     if value >= 90:
         return Text(f"{value:>5.1f}%", style=C_SLOW)
     return Text(f"{value:>5.1f}%", style=C_ERROR)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TABLE BUILDER
@@ -275,7 +251,6 @@ def _run_checks() -> list[CheckResult]:
     order = list(HOSTS.keys())
     results.sort(key=lambda r: order.index(r.name))
     return results
-
 
 def build_status_table(results: list[CheckResult]) -> Table:
     table = Table(
@@ -307,7 +282,6 @@ def build_status_table(results: list[CheckResult]) -> Table:
 
     return table
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # SUMMARY BAR
 # ═══════════════════════════════════════════════════════════════════════════
@@ -317,12 +291,10 @@ def build_summary(results: list[CheckResult]) -> Text:
     online  = sum(1 for r in results if r.status == Status.ONLINE)
     limited = sum(1 for r in results if r.status == Status.LIMITED)
     failing = total - online - limited
-
     avg_lat = None
     lats = [r.latency for r in results if r.latency is not None]
     if lats:
         avg_lat = sum(lats) / len(lats)
-
     t = Text()
     t.append(f" {online}/{total} ", style=f"bold {C_OK}")
     t.append("online  ", style=C_DIM)
@@ -335,23 +307,18 @@ def build_summary(results: list[CheckResult]) -> Text:
     t.append("  🦐", style="")
     return t
 
-
 def build_graphs(results: list[CheckResult]) -> Text:
     """Render full-width sparkline graph panel — one row per service."""
     SPARK = "▁▂▃▄▅▆▇█"
     NAME_W  = 15   # fixed name column width
     BAR_GAP = "" # breathing room between bars
-
     t = Text()
-
     for i, r in enumerate(results):
         hist = host_stats[r.name].history
-
         # ── name column (fixed width, right-padded) ───────────────────────
         name = r.name[:NAME_W]
         t.append(f"  {name:<{NAME_W}}", style=C_DIM)
         t.append(" │ ", style=C_BORDER)
-
         # ── sparkline bars ────────────────────────────────────────────────
         if hist:
             mn, mx = min(hist), max(hist)
@@ -359,7 +326,6 @@ def build_graphs(results: list[CheckResult]) -> Text:
             for j, v in enumerate(hist):
                 idx  = int((v - mn) / span * (len(SPARK) - 1))
                 char = SPARK[max(0, min(idx, len(SPARK) - 1))]
-
                 # colour each bar individually by its own latency value
                 if v < LAT_FAST:
                     bar_colour = C_OK
@@ -367,23 +333,18 @@ def build_graphs(results: list[CheckResult]) -> Text:
                     bar_colour = C_SLOW
                 else:
                     bar_colour = C_ERROR
-
                 t.append(char, style=bar_colour)
                 t.append(BAR_GAP, style="")  # air between bars
-
             # ── latest value on the right ─────────────────────────────────
             latest = hist[-1]
             t.append("  ")
             t.append(_latency_text(latest))
         else:
             t.append("─ no data yet ─", style=C_DIM)
-
         # newline between rows (no trailing newline after last)
         if i < len(results) - 1:
             t.append("\n\n", style="")   # double newline = breathing room
-
     return t
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FULL LAYOUT  ·  columns 2 : 1  (top)  +  graphs 3  (bottom)
@@ -465,20 +426,16 @@ def build_layout(results: list[CheckResult]) -> Layout:
 
     return root
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
     console = Console()
-
     console.print(f"\n[{C_TITLE}]  🦐  NOC Monitor initialising …[/{C_TITLE}]\n")
     time.sleep(0.4)
-
     # first probe pass before entering live mode
     results = _run_checks()
-
     try:
         with Live(
             build_layout(results),
@@ -490,10 +447,8 @@ def main() -> None:
                 results = _run_checks()
                 live.update(build_layout(results))
                 time.sleep(REFRESH_INTERVAL)
-
     except KeyboardInterrupt:
         console.print(f"\n[{C_DIM}]  🦐  Monitor stopped.[/{C_DIM}]\n")
-
 
 if __name__ == "__main__":
     main()
