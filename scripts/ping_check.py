@@ -1,10 +1,12 @@
 """
 ╔══════════════════════════════════════════════════════╗
 ║           🦐 NOC MONITOR  · by shrimp               ║
-║       Terminal network monitoring dashboard          ║
+║       Terminal network monitoring dashboard         ║
 ╚══════════════════════════════════════════════════════╝
 """
+
 from __future__ import annotations
+
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,19 +14,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Deque, Dict, Optional, Tuple
+
 import requests
-from rich.box import MINIMAL, SIMPLE_HEAD
-from rich.columns import Columns
+
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich import rule
+from rich.box import SIMPLE_HEAD
 
-# ── suppress verbose urllib3 warnings ────────────────────────────────────────
+# ── suppress urllib warnings ──────────────────────────────────────────────
+
 import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
@@ -32,12 +36,37 @@ requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-REFRESH_INTERVAL: float = 2.0
-MAX_HISTORY: int = 12
-MAX_WORKERS: int = 20
-HTTP_TIMEOUT: float = 3.0
-ICMP_TIMEOUT: float = 1.5
+REFRESH_INTERVAL = 2.0
+MAX_HISTORY = 10
+MAX_WORKERS = 30
+
+HTTP_TIMEOUT = 3.0
+
 SPARKLINE = "▁▂▃▄▅▆▇█"
+
+# ── colours ───────────────────────────────────────────────────────────────
+
+C_OK = "bright_green"
+C_WARN = "bright_yellow"
+C_SLOW = "bright_cyan"
+C_ERROR = "bright_red"
+C_TIMEOUT = "bright_magenta"
+
+C_DIM = "grey70"
+C_BORDER = "bright_blue"
+C_TITLE = "bright_cyan"
+
+C_LINK = "#ff9ad5"
+
+# ── latency thresholds ────────────────────────────────────────────────────
+
+LAT_FAST = 80
+LAT_MEDIUM = 200
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ASCII
+# ═══════════════════════════════════════════════════════════════════════════
+
 SHRIMP_ART = r"""
 ⠀⠀⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⣀⣤⣤⣀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⢀⣀⡙⠻⢶⣶⣦⣴⣶⣶⣶⠾⠛⠛⠋⠉⠉⠉⠉⠙⠃⠀⠀⠀⠀⠀
@@ -51,137 +80,285 @@ SHRIMP_ART = r"""
 ⠀⠀⠘⢿⣿⣿⣿⣿⣿⡇⠠⣦⣄⠉⠳⣤⠈⠛⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⢠⣌⣉⡉⠉⣉⡁⠀⠀⠙⠗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠹⢿⣿⣿⣿⣿⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠙⠻⣿⣿⠟⢀⣤⡀⠀⠀⠀⠀⠀⠀⣀⣀⣠⣤⣤⣤⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠙⠻⣿⣿⠟⢀⣤⡀⠀⠀⠀⠀⠀⣀⣀⣠⣤⣤⣤⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠛⠿⠿⡿⠂⣀⣠⣤⣤⣤⣀⣉⣉⠉⠉⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠙⠛⠛⠛⠛⠋⠉⠉⠁⠀⠀⠀⠀
 
               SHRIMP NODE
          NETWORK OBSERVATION
 """
-# ── colour palette ────────────────────────────────────────────────────────
-# ── ULTRA BRIGHT CYBER PALETTE ────────────────────────────────────────────
-
-C_OK      = "bright_green"
-C_WARN    = "bright_yellow"
-C_SLOW    = "bright_cyan"
-C_ERROR   = "bright_red"
-C_TIMEOUT = "bright_magenta"
-C_DIM     = "bright_white"
-C_TITLE   = "bright_cyan"
-C_BORDER  = "bright_blue"
-C_TIME    = "bright_white"
-
-# ── latency thresholds (ms) ───────────────────────────────────────────────
-LAT_FAST   = 80
-LAT_MEDIUM = 200
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DATA MODEL
+# STATUS
 # ═══════════════════════════════════════════════════════════════════════════
 
 class Status(str, Enum):
-    ONLINE    = "ONLINE"
-    LIMITED   = "LIMITED"
-    FAIL      = "FAIL"
-    TIMEOUT   = "TIMEOUT"
-    ERROR     = "ERROR"
+    ONLINE = "ONLINE"
+    LIMITED = "LIMITED"
+    FAIL = "FAIL"
+    TIMEOUT = "TIMEOUT"
+    ERROR = "ERROR"
 
-STATUS_LABEL: Dict[Status, Tuple[str, str]] = {
-    #            rich markup colour   display text
-    Status.ONLINE:   (C_OK,      "● ONLINE"),
-    Status.LIMITED:  (C_WARN,    "◐ LIMITED"),
-    Status.FAIL:     (C_ERROR,   "✕ FAIL"),
+
+STATUS_LABEL = {
+    Status.ONLINE:   (C_OK, "● ONLINE"),
+    Status.LIMITED:  (C_WARN, "◐ LIMITED"),
+    Status.FAIL:     (C_ERROR, "✕ FAIL"),
     Status.TIMEOUT:  (C_TIMEOUT, "⧗ TIMEOUT"),
-    Status.ERROR:    (C_DIM,     "? ERROR"),
+    Status.ERROR:    (C_DIM, "? ERROR"),
 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATA MODELS
+# ═══════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class CheckResult:
-    name:    str
+    name: str
     address: str
-    status:  Status
-    latency: Optional[float]   # ms, None if unreachable
-    checked_at: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    status: Status
+    latency: Optional[float]
+    checked_at: str = field(
+        default_factory=lambda: datetime.now().strftime("%H:%M:%S")
+    )
+
 
 @dataclass
 class HostStats:
-    ok:    int = 0
+    ok: int = 0
     total: int = 0
-    history: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_HISTORY))
+    history: Deque[float] = field(
+        default_factory=lambda: deque(maxlen=MAX_HISTORY)
+    )
 
     @property
     def uptime(self) -> float:
         return (self.ok / self.total * 100) if self.total else 0.0
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MONITORING TARGETS
+# HOSTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-HOSTS: Dict[str, Tuple[str, str]] = {
-    "Google DNS":    ("8.8.8.8",                  "icmp"),
-    "Cloudflare DNS":("1.1.1.1",                  "icmp"),
-    "YouTube":       ("https://youtube.com",       "http"),
-    "TikTok":        ("https://tiktok.com",        "http"),
-    "Telegram":      ("https://telegram.org",      "http"),
-    "Instagram":     ("https://instagram.com",     "http"),
-    "Spotify":       ("https://spotify.com",       "http"),
-    "Yandex Music":  ("https://music.yandex.ru",   "http"),
-    "OpenAI":        ("https://openai.com",        "http"),
-    "GitHub":        ("https://github.com",        "http"),
-    "Wikipedia":     ("https://wikipedia.org",     "http"),
-    "Amazon AWS":    ("https://aws.amazon.com",    "http"),
+HOSTS: Dict[str, Tuple[str, str, str]] = {
+
+    # ── SOCIAL ────────────────────────────────────────────────────────────
+
+    "YouTube": (
+        "https://youtube.com",
+        "https://youtube.com",
+        "http"
+    ),
+
+    "TikTok": (
+        "https://tiktok.com",
+        "https://tiktok.com",
+        "http"
+    ),
+
+    "Instagram": (
+        "https://instagram.com",
+        "https://instagram.com",
+        "http"
+    ),
+
+    "Twitter/X": (
+        "https://x.com",
+        "https://x.com",
+        "http"
+    ),
+
+    "Facebook": (
+        "https://facebook.com",
+        "https://facebook.com",
+        "http"
+    ),
+
+    "Reddit": (
+        "https://reddit.com",
+        "https://reddit.com",
+        "http"
+    ),
+
+    # ── MESSAGING ────────────────────────────────────────────────────────
+
+    "Telegram": (
+        "https://telegram.org",
+        "https://telegram.org",
+        "http"
+    ),
+
+    "Discord": (
+        "https://discord.com",
+        "https://discord.com",
+        "http"
+    ),
+
+    "WhatsApp": (
+        "https://web.whatsapp.com",
+        "https://web.whatsapp.com",
+        "http"
+    ),
+
+    # ── STREAMING ────────────────────────────────────────────────────────
+
+    "Spotify": (
+        "https://spotify.com",
+        "https://spotify.com",
+        "http"
+    ),
+
+    "Yandex Music": (
+        "https://music.yandex.ru",
+        "https://music.yandex.ru",
+        "http"
+    ),
+
+    "Netflix": (
+        "https://netflix.com",
+        "https://netflix.com",
+        "http"
+    ),
+
+    "Twitch": (
+        "https://twitch.tv",
+        "https://twitch.tv",
+        "http"
+    ),
+
+    "Steam": (
+        "https://store.steampowered.com",
+        "https://store.steampowered.com",
+        "http"
+    ),
+
+    # ── CLOUD / DEV ──────────────────────────────────────────────────────
+
+    "OpenAI": (
+        "https://openai.com",
+        "https://openai.com",
+        "http"
+    ),
+
+    "Anthropic": (
+        "https://anthropic.com",
+        "https://anthropic.com",
+        "http"
+    ),
+
+    "GitHub": (
+        "https://github.com",
+        "https://github.com",
+        "http"
+    ),
+
+    "GitLab": (
+        "https://gitlab.com",
+        "https://gitlab.com",
+        "http"
+    ),
+
+    "Cloudflare": (
+        "https://cloudflare.com",
+        "https://cloudflare.com",
+        "http"
+    ),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PROBE FUNCTIONS
+# GRAPH GROUPS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _probe_icmp(host: str) -> Tuple[Optional[float], Status]:
-    try:
-        from ping3 import ping  # lazy import — optional dependency
-        raw = ping(host, timeout=ICMP_TIMEOUT, unit="ms")
-        if raw is None:
-            return None, Status.TIMEOUT
-        return round(raw, 1), Status.ONLINE
-    except ImportError:
-        # fall back to HTTP if ping3 is unavailable
-        return _probe_http(f"http://{host}")
-    except Exception:
-        return None, Status.ERROR
+GRAPH_GROUPS = {
+    "SOCIAL": [
+        "YouTube",
+        "TikTok",
+        "Instagram",
+        "Twitter/X",
+        "Facebook",
+        "Reddit",
+    ],
+
+    "MESSAGING": [
+        "Telegram",
+        "Discord",
+        "WhatsApp",
+    ],
+
+    "STREAMING": [
+        "Spotify",
+        "Yandex Music",
+        "Netflix",
+        "Twitch",
+        "Steam",
+    ],
+
+    "CLOUD / DEV": [
+        "OpenAI",
+        "Anthropic",
+        "GitHub",
+        "GitLab",
+        "Cloudflare",
+    ],
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PROBE
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _probe_http(url: str) -> Tuple[Optional[float], Status]:
+
     try:
+
         start = time.monotonic()
+
         response = requests.get(
             url,
             timeout=HTTP_TIMEOUT,
             allow_redirects=True,
-            headers={"User-Agent": "NOC-Monitor/2.0 (shrimp)"},
+            headers={
+                "User-Agent": "NOC-Monitor/2.0"
+            },
             verify=False,
         )
-        latency = round((time.monotonic() - start) * 1000, 1)
+
+        latency = round(
+            (time.monotonic() - start) * 1000,
+            1
+        )
 
         if response.status_code < 300:
             return latency, Status.ONLINE
+
         if response.status_code in (401, 403):
             return latency, Status.LIMITED
+
         return latency, Status.FAIL
 
     except requests.exceptions.Timeout:
         return None, Status.TIMEOUT
+
     except requests.exceptions.ConnectionError:
         return None, Status.ERROR
+
     except Exception:
         return None, Status.ERROR
 
-def probe(name: str, address: str, mode: str) -> CheckResult:
-    """Dispatch to the right probe and return a normalised result."""
-    if mode == "icmp":
-        latency, status = _probe_icmp(address)
-    else:
-        latency, status = _probe_http(address)
 
-    return CheckResult(name=name, address=address, status=status, latency=latency)
+def probe(
+    name: str,
+    display_addr: str,
+    probe_addr: str,
+    mode: str
+) -> CheckResult:
+
+    latency, status = _probe_http(probe_addr)
+
+    return CheckResult(
+        name=name,
+        address=display_addr,
+        status=status,
+        latency=latency,
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STATE
@@ -190,197 +367,394 @@ def probe(name: str, address: str, mode: str) -> CheckResult:
 host_stats: Dict[str, HostStats] = defaultdict(HostStats)
 
 def record(result: CheckResult) -> None:
-    s = host_stats[result.name]
-    s.total += 1
+
+    stats = host_stats[result.name]
+
+    stats.total += 1
+
     if result.status == Status.ONLINE:
-        s.ok += 1
+        stats.ok += 1
+
     if result.latency is not None:
-        s.history.append(result.latency)
+        stats.history.append(result.latency)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# RENDERING HELPERS
+# HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _latency_text(latency: Optional[float]) -> Text:
+
     if latency is None:
         return Text("—", style=C_DIM)
+
     if latency < LAT_FAST:
         colour = C_OK
+
     elif latency < LAT_MEDIUM:
         colour = C_SLOW
+
     else:
         colour = C_ERROR
-    return Text(f"{latency:>7.1f} ms", style=colour)
+
+    return Text(
+        f"{latency:>7.1f} ms",
+        style=colour
+    )
+
 
 def _status_text(status: Status) -> Text:
-    colour, label = STATUS_LABEL[status]
-    return Text(label, style=f"bold {colour}" if status == Status.ONLINE else colour)
 
-def _sparkline(history: Deque[float]) -> str:
-    if not history:
-        return Text("", style=C_DIM)
-    mn, mx = min(history), max(history)
-    span = mx - mn or 1
-    bars = [SPARKLINE[int((v - mn) / span * (len(SPARKLINE) - 1))] for v in history]
-    return " ".join(bars)
+    colour, label = STATUS_LABEL[status]
+
+    return Text(
+        label,
+        style=f"bold {colour}"
+    )
+
 
 def _uptime_text(value: float) -> Text:
+
     if value >= 99:
-        return Text(f"{value:>5.1f}%", style=C_OK)
-    if value >= 90:
-        return Text(f"{value:>5.1f}%", style=C_SLOW)
-    return Text(f"{value:>5.1f}%", style=C_ERROR)
+        style = C_OK
+
+    elif value >= 90:
+        style = C_SLOW
+
+    else:
+        style = C_ERROR
+
+    return Text(
+        f"{value:>5.1f}%",
+        style=style
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TABLE BUILDER
+# CHECKS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _run_checks() -> list[CheckResult]:
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+
         futures = {
-            pool.submit(probe, name, addr, mode): name
-            for name, (addr, mode) in HOSTS.items()
+            pool.submit(
+                probe,
+                name,
+                display_addr,
+                probe_addr,
+                mode
+            ): name
+
+            for name, (
+                display_addr,
+                probe_addr,
+                mode
+            ) in HOSTS.items()
         }
+
         results = []
-        for fut in as_completed(futures):
-            result = fut.result()
+
+        for future in as_completed(futures):
+
+            result = future.result()
+
             record(result)
+
             results.append(result)
 
-    # preserve original order
     order = list(HOSTS.keys())
-    results.sort(key=lambda r: order.index(r.name))
+
+    results.sort(
+        key=lambda r: order.index(r.name)
+    )
+
     return results
 
+# ═══════════════════════════════════════════════════════════════════════════
+# TABLE
+# ═══════════════════════════════════════════════════════════════════════════
+
 def build_status_table(results: list[CheckResult]) -> Table:
+
     table = Table(
         box=SIMPLE_HEAD,
         border_style=C_BORDER,
         header_style=f"bold {C_TITLE}",
         show_edge=True,
-        pad_edge=True,
         expand=True,
     )
 
-    table.add_column("TIME",    style=C_TIME,  no_wrap=True, width=10)
-    table.add_column("SERVICE",               no_wrap=True, min_width=14)
-    table.add_column("ADDRESS", style=C_DIM,  no_wrap=True, min_width=22)
-    table.add_column("STATUS",                no_wrap=True, justify="left",  width=14)
-    table.add_column("LATENCY",               no_wrap=True, justify="right", width=12)
-    table.add_column("UPTIME",                no_wrap=True, justify="right", width=8)
+    table.add_column(
+        "TIME",
+        width=10,
+        no_wrap=True,
+    )
 
-    for r in results:
-        s = host_stats[r.name]
+    table.add_column(
+        "SERVICE",
+        min_width=14,
+    )
+
+    table.add_column(
+        "ADDRESS",
+        style=C_LINK,
+        min_width=34,
+        no_wrap=True,
+    )
+
+    table.add_column(
+        "STATUS",
+        width=14,
+    )
+
+    table.add_column(
+        "LATENCY",
+        width=12,
+        justify="right",
+    )
+
+    table.add_column(
+        "UPTIME",
+        width=8,
+        justify="right",
+    )
+
+    for result in results:
+
+        stats = host_stats[result.name]
+
         table.add_row(
-            r.checked_at,
-            r.name,
-            r.address,
-            _status_text(r.status),
-            _latency_text(r.latency),
-            _uptime_text(s.uptime),
+            result.checked_at,
+            result.name,
+            result.address,
+            _status_text(result.status),
+            _latency_text(result.latency),
+            _uptime_text(stats.uptime),
         )
 
     return table
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SUMMARY BAR
+# SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_summary(results: list[CheckResult]) -> Text:
-    total   = len(results)
-    online  = sum(1 for r in results if r.status == Status.ONLINE)
-    limited = sum(1 for r in results if r.status == Status.LIMITED)
+
+    total = len(results)
+
+    online = sum(
+        1 for r in results
+        if r.status == Status.ONLINE
+    )
+
+    limited = sum(
+        1 for r in results
+        if r.status == Status.LIMITED
+    )
+
     failing = total - online - limited
-    avg_lat = None
-    lats = [r.latency for r in results if r.latency is not None]
-    if lats:
-        avg_lat = sum(lats) / len(lats)
-    t = Text()
-    t.append(f" {online}/{total} ", style=f"bold {C_OK}")
-    t.append("online  ", style=C_DIM)
+
+    latencies = [
+        r.latency
+        for r in results
+        if r.latency is not None
+    ]
+
+    avg = (
+        sum(latencies) / len(latencies)
+        if latencies
+        else 0
+    )
+
+    text = Text()
+
+    text.append(
+        f" {online}/{total} ",
+        style=f"bold {C_OK}"
+    )
+
+    text.append(
+        "online  ",
+        style=C_DIM
+    )
+
     if limited:
-        t.append(f"{limited} limited  ", style=C_WARN)
+        text.append(
+            f"{limited} limited  ",
+            style=C_WARN
+        )
+
     if failing:
-        t.append(f"{failing} failing  ", style=C_ERROR)
-    if avg_lat is not None:
-        t.append(f"avg {avg_lat:.0f} ms", style=C_SLOW)
-    t.append("  🦐", style="")
-    return t
+        text.append(
+            f"{failing} failing  ",
+            style=C_ERROR
+        )
 
-def build_graphs(results: list[CheckResult]) -> Text:
-    """Render full-width sparkline graph panel — one row per service."""
-    SPARK = "▁▂▃▄▅▆▇█"
-    NAME_W  = 15   # fixed name column width
-    BAR_GAP = "" # breathing room between bars
-    t = Text()
-    for i, r in enumerate(results):
-        hist = host_stats[r.name].history
-        # ── name column (fixed width, right-padded) ───────────────────────
-        name = r.name[:NAME_W]
-        t.append(f"  {name:<{NAME_W}}", style=C_DIM)
-        t.append(" │ ", style=C_BORDER)
-        # ── sparkline bars ────────────────────────────────────────────────
-        if hist:
-            mn, mx = min(hist), max(hist)
+    text.append(
+        f"avg {avg:.0f} ms",
+        style=C_SLOW
+    )
+
+    text.append("  🦐")
+
+    return text
+
+# ───────────────────────────────────────────────────────────────────────────
+# COLOURS
+# ───────────────────────────────────────────────────────────────────────────
+
+C_OK = "bright_green"
+C_WARN = "bright_yellow"
+C_SLOW = "bright_cyan"
+C_ERROR = "bright_red"
+C_TIMEOUT = "bright_magenta"
+
+# brighter UI
+C_DIM = "bright_white"
+
+# vivid borders
+C_BORDER = "bright_blue"
+
+C_TITLE = "bright_cyan"
+
+# links
+C_LINK = "#ff9ad5"
+
+# ───────────────────────────────────────────────────────────────────────────
+# GRAPH PANELS
+# ───────────────────────────────────────────────────────────────────────────
+
+def build_graph_panel(
+    names: list[str],
+    title: str
+) -> Panel:
+
+    text = Text()
+
+    for idx, name in enumerate(names):
+
+        history = host_stats[name].history
+
+        short = name[:11]
+
+        text.append(
+            f"{short:<11}",
+            style="bold bright_white"
+        )
+
+        text.append(
+            " ",
+            style="bright_blue"
+        )
+
+        if history:
+
+            mn = min(history)
+            mx = max(history)
+
             span = mx - mn or 1
-            for j, v in enumerate(hist):
-                idx  = int((v - mn) / span * (len(SPARK) - 1))
-                char = SPARK[max(0, min(idx, len(SPARK) - 1))]
-                # colour each bar individually by its own latency value
-                if v < LAT_FAST:
-                    bar_colour = C_OK
-                elif v < LAT_MEDIUM:
-                    bar_colour = C_SLOW
-                else:
-                    bar_colour = C_ERROR
-                t.append(char, style=bar_colour)
-                t.append(BAR_GAP, style="")  # air between bars
-            # ── latest value on the right ─────────────────────────────────
-            latest = hist[-1]
-            t.append("  ")
-            t.append(_latency_text(latest))
-        else:
-            t.append("─ no data yet ─", style=C_DIM)
-        # newline between rows (no trailing newline after last)
-        if i < len(results) - 1:
-            t.append("\n\n", style="")   # double newline = breathing room
-    return t
 
-# ═══════════════════════════════════════════════════════════════════════════
-# FULL LAYOUT  ·  columns 2 : 1  (top)  +  graphs 3  (bottom)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-#   ┌─────────────────────────── header ─────────────────────────────┐
-#   │       table (ratio 2)       │      shrimp art (ratio 1)        │
-#   │  ─ ─ ─ ─ ─ ─ ─ ─ ─ summary bar ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
-#   │                      graphs (ratio 3)                           │
-#   └────────────────────────────────────────────────────────────────┘
+            for value in history:
+
+                spark_idx = int(
+                    (value - mn) / span * (len(SPARKLINE) - 1)
+                )
+
+                char = SPARKLINE[spark_idx]
+
+                colour = (
+                    C_OK
+                    if value < LAT_FAST
+                    else C_SLOW
+                    if value < LAT_MEDIUM
+                    else C_ERROR
+                )
+
+                text.append(
+                    char,
+                    style=f"bold {colour}"
+                )
+
+            latest_colour = (
+                C_OK
+                if history[-1] < LAT_FAST
+                else C_SLOW
+                if history[-1] < LAT_MEDIUM
+                else C_ERROR
+            )
+
+            text.append(
+                f" {history[-1]:>4.0f}ms",
+                style=f"bold {latest_colour}"
+            )
+
+        else:
+
+            text.append(
+                "──────────",
+                style="bright_red"
+            )
+
+        if idx != len(names) - 1:
+            text.append("\n")
+
+    return Panel(
+        text,
+        title=f"[bold {C_TITLE}]{title}[/bold {C_TITLE}]",
+        border_style=C_BORDER,
+        padding=(1, 1),
+    )
+
+# ───────────────────────────────────────────────────────────────────────────
+# LAYOUT
+# ───────────────────────────────────────────────────────────────────────────
 
 def build_layout(results: list[CheckResult]) -> Layout:
+
     root = Layout()
 
     root.split_column(
-        Layout(name="header",  size=3),
-        Layout(name="top",     ratio=2),
+        Layout(name="header", size=3),
+        Layout(name="top", ratio=3),
         Layout(name="summary", size=3),
-        Layout(name="graphs",  ratio=3),
+        Layout(name="graphs", ratio=3),
     )
 
-    # ── header ────────────────────────────────────────────────────────────
-    ts = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-    header_text = Text(justify="center")
-    header_text.append("  🌐  NOC MONITOR  ", style=f"bold {C_TITLE}")
-    header_text.append(f"│  {ts}  │  ",        style=C_DIM)
-    header_text.append("press Ctrl+C to exit", style=C_DIM)
+    # ── HEADER ────────────────────────────────────────────────────────────
+
+    timestamp = datetime.now().strftime(
+        "%Y-%m-%d  %H:%M:%S"
+    )
+
+    header = Text(justify="center")
+
+    header.append(
+        " 🌐 SHRIMP NOC MONITOR ",
+        style=f"bold {C_TITLE}"
+    )
+
+    header.append(
+        f"│ {timestamp} │ ",
+        style="bright_white"
+    )
+
+    header.append(
+        "Ctrl+C to exit",
+        style="bright_white"
+    )
 
     root["header"].update(
-        Panel(header_text, border_style=C_BORDER, padding=(0, 2))
+        Panel(
+            header,
+            border_style=C_BORDER,
+        )
     )
 
-    # ── top row: table (2) | shrimp art (1) ──────────────────────────────
+    # ── TOP ───────────────────────────────────────────────────────────────
+
     root["top"].split_row(
-        Layout(name="table",  ratio=2),
-        Layout(name="shrimp", ratio=1),
+        Layout(name="table", ratio=2),
+        Layout(name="art", ratio=1),
     )
 
     root["top"]["table"].update(
@@ -391,21 +765,22 @@ def build_layout(results: list[CheckResult]) -> Layout:
         )
     )
 
-    shrimp_text = Text(
-    SHRIMP_ART,
-    style="bright_white",
-    justify="center",
-)
-    root["top"]["shrimp"].update(
+    shrimp = Text(
+        SHRIMP_ART,
+        justify="center",
+        style="bright_white",
+    )
+
+    root["top"]["art"].update(
         Panel(
-            shrimp_text,
-            title=f"[{C_DIM}]watermark[/{C_DIM}]",
+            shrimp,
+            title="[bright_cyan]watermark[/bright_cyan]",
             border_style=C_BORDER,
-            padding=(1, 2),
         )
     )
 
-    # ── summary bar ───────────────────────────────────────────────────────
+    # ── SUMMARY ───────────────────────────────────────────────────────────
+
     root["summary"].update(
         Panel(
             build_summary(results),
@@ -414,41 +789,115 @@ def build_layout(results: list[CheckResult]) -> Layout:
         )
     )
 
-    # ── graphs (full width) ───────────────────────────────────────────────
-    root["graphs"].update(
-        Panel(
-            build_graphs(results),
-            title=f"[bold {C_TITLE}]LATENCY HISTORY[/bold {C_TITLE}]",
-            border_style=C_BORDER,
-            padding=(1, 3),
+    # ── GRAPHS GRID ──────────────────────────────────────────────────────
+
+    root["graphs"].split_row(
+        Layout(name="left"),
+        Layout(name="right"),
+    )
+
+    # LEFT
+
+    root["graphs"]["left"].split_column(
+        Layout(name="g1"),
+        Layout(name="spacer1", size=1),
+        Layout(name="g2"),
+    )
+
+    # RIGHT
+
+    root["graphs"]["right"].split_column(
+        Layout(name="g3"),
+        Layout(name="spacer2", size=1),
+        Layout(name="g4"),
+    )
+
+    # spacers
+
+    root["graphs"]["left"]["spacer1"].update(
+        Text(" ")
+    )
+
+    root["graphs"]["right"]["spacer2"].update(
+        Text(" ")
+    )
+
+    groups = list(GRAPH_GROUPS.items())
+
+    root["graphs"]["left"]["g1"].update(
+        build_graph_panel(
+            groups[0][1],
+            groups[0][0]
+        )
+    )
+
+    root["graphs"]["left"]["g2"].update(
+        build_graph_panel(
+            groups[1][1],
+            groups[1][0]
+        )
+    )
+
+    root["graphs"]["right"]["g3"].update(
+        build_graph_panel(
+            groups[2][1],
+            groups[2][0]
+        )
+    )
+
+    root["graphs"]["right"]["g4"].update(
+        build_graph_panel(
+            groups[3][1],
+            groups[3][0]
         )
     )
 
     return root
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ENTRY POINT
+# MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
+
     console = Console()
-    console.print(f"\n[{C_TITLE}]  🦐  NOC Monitor initialising …[/{C_TITLE}]\n")
+
+    console.print(
+        f"\n[{C_TITLE}]🦐 Initialising Shrimp Node…[/{C_TITLE}]\n"
+    )
+
     time.sleep(0.4)
-    # first probe pass before entering live mode
+
     results = _run_checks()
+
     try:
+
         with Live(
             build_layout(results),
             console=console,
             refresh_per_second=2,
             screen=True,
         ) as live:
+
             while True:
+
                 results = _run_checks()
-                live.update(build_layout(results))
-                time.sleep(REFRESH_INTERVAL)
+
+                live.update(
+                    build_layout(results)
+                )
+
+                time.sleep(
+                    REFRESH_INTERVAL
+                )
+
     except KeyboardInterrupt:
-        console.print(f"\n[{C_DIM}]  🦐  Monitor stopped.[/{C_DIM}]\n")
+
+        console.print(
+            f"\n[{C_DIM}]🦐 Monitor stopped.[/{C_DIM}]\n"
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     main()
