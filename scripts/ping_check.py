@@ -4,9 +4,7 @@
 ║       Terminal network monitoring dashboard         ║
 ╚══════════════════════════════════════════════════════╝
 """
-
 from __future__ import annotations
-
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,9 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Deque, Dict, Optional, Tuple
-
 import requests
-
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -24,14 +20,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich.box import SIMPLE_HEAD
-
 # ── suppress urllib warnings ──────────────────────────────────────────────
-
 import urllib3
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
-
 # ═══════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -39,9 +31,7 @@ requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 REFRESH_INTERVAL = 2.0
 MAX_HISTORY = 10
 MAX_WORKERS = 30
-
 HTTP_TIMEOUT = 3.0
-
 SPARKLINE = "▁▂▃▄▅▆▇█"
 
 # ── colours ───────────────────────────────────────────────────────────────
@@ -51,11 +41,9 @@ C_WARN = "bright_yellow"
 C_SLOW = "bright_cyan"
 C_ERROR = "bright_red"
 C_TIMEOUT = "bright_magenta"
-
 C_DIM = "grey70"
 C_BORDER = "bright_blue"
 C_TITLE = "bright_cyan"
-
 C_LINK = "#ff9ad5"
 
 # ── latency thresholds ────────────────────────────────────────────────────
@@ -539,51 +527,40 @@ def build_status_table(results: list[CheckResult]) -> Table:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_summary(results: list[CheckResult]) -> Text:
-
     total = len(results)
-
     online = sum(
         1 for r in results
         if r.status == Status.ONLINE
     )
-
     limited = sum(
         1 for r in results
         if r.status == Status.LIMITED
     )
-
     failing = total - online - limited
-
     latencies = [
         r.latency
         for r in results
         if r.latency is not None
     ]
-
     avg = (
         sum(latencies) / len(latencies)
         if latencies
         else 0
     )
-
     text = Text()
-
     text.append(
         f" {online}/{total} ",
         style=f"bold {C_OK}"
     )
-
     text.append(
         "online  ",
         style=C_DIM
     )
-
     if limited:
         text.append(
             f"{limited} limited  ",
             style=C_WARN
         )
-
     if failing:
         text.append(
             f"{failing} failing  ",
@@ -594,7 +571,6 @@ def build_summary(results: list[CheckResult]) -> Text:
         f"avg {avg:.0f} ms",
         style=C_SLOW
     )
-
     text.append("  🦐")
 
     return text
@@ -602,21 +578,16 @@ def build_summary(results: list[CheckResult]) -> Text:
 # ───────────────────────────────────────────────────────────────────────────
 # COLOURS
 # ───────────────────────────────────────────────────────────────────────────
-
 C_OK = "bright_green"
 C_WARN = "bright_yellow"
 C_SLOW = "bright_cyan"
 C_ERROR = "bright_red"
 C_TIMEOUT = "bright_magenta"
-
 # brighter UI
 C_DIM = "bright_white"
-
 # vivid borders
 C_BORDER = "bright_blue"
-
 C_TITLE = "bright_cyan"
-
 # links
 C_LINK = "#ff9ad5"
 
@@ -628,40 +599,28 @@ def build_graph_panel(
     names: list[str],
     title: str
 ) -> Panel:
-
     text = Text()
-
     for idx, name in enumerate(names):
-
         history = host_stats[name].history
-
         short = name[:11]
-
         text.append(
             f"{short:<11}",
             style="bold bright_white"
         )
-
         text.append(
             " ",
             style="bright_blue"
         )
 
         if history:
-
             mn = min(history)
             mx = max(history)
-
             span = mx - mn or 1
-
             for value in history:
-
                 spark_idx = int(
                     (value - mn) / span * (len(SPARKLINE) - 1)
                 )
-
                 char = SPARKLINE[spark_idx]
-
                 colour = (
                     C_OK
                     if value < LAT_FAST
@@ -710,9 +669,7 @@ def build_graph_panel(
 # ───────────────────────────────────────────────────────────────────────────
 
 def build_layout(results: list[CheckResult]) -> Layout:
-
     root = Layout()
-
     root.split_column(
         Layout(name="header", size=3),
         Layout(name="top", ratio=3),
@@ -721,28 +678,23 @@ def build_layout(results: list[CheckResult]) -> Layout:
     )
 
     # ── HEADER ────────────────────────────────────────────────────────────
-
     timestamp = datetime.now().strftime(
         "%Y-%m-%d  %H:%M:%S"
     )
 
     header = Text(justify="center")
-
     header.append(
         " 🌐 SHRIMP NOC MONITOR ",
         style=f"bold {C_TITLE}"
     )
-
     header.append(
         f"│ {timestamp} │ ",
         style="bright_white"
     )
-
     header.append(
         "Ctrl+C to exit",
         style="bright_white"
     )
-
     root["header"].update(
         Panel(
             header,
@@ -751,7 +703,6 @@ def build_layout(results: list[CheckResult]) -> Layout:
     )
 
     # ── TOP ───────────────────────────────────────────────────────────────
-
     root["top"].split_row(
         Layout(name="table", ratio=2),
         Layout(name="art", ratio=1),
@@ -770,7 +721,6 @@ def build_layout(results: list[CheckResult]) -> Layout:
         justify="center",
         style="bright_white",
     )
-
     root["top"]["art"].update(
         Panel(
             shrimp,
@@ -780,7 +730,6 @@ def build_layout(results: list[CheckResult]) -> Layout:
     )
 
     # ── SUMMARY ───────────────────────────────────────────────────────────
-
     root["summary"].update(
         Panel(
             build_summary(results),
@@ -790,14 +739,12 @@ def build_layout(results: list[CheckResult]) -> Layout:
     )
 
     # ── GRAPHS GRID ──────────────────────────────────────────────────────
-
     root["graphs"].split_row(
         Layout(name="left"),
         Layout(name="right"),
     )
 
     # LEFT
-
     root["graphs"]["left"].split_column(
         Layout(name="g1"),
         Layout(name="spacer1", size=1),
@@ -805,7 +752,6 @@ def build_layout(results: list[CheckResult]) -> Layout:
     )
 
     # RIGHT
-
     root["graphs"]["right"].split_column(
         Layout(name="g3"),
         Layout(name="spacer2", size=1),
@@ -813,38 +759,32 @@ def build_layout(results: list[CheckResult]) -> Layout:
     )
 
     # spacers
-
     root["graphs"]["left"]["spacer1"].update(
         Text(" ")
     )
-
     root["graphs"]["right"]["spacer2"].update(
         Text(" ")
     )
-
+    
     groups = list(GRAPH_GROUPS.items())
-
     root["graphs"]["left"]["g1"].update(
         build_graph_panel(
             groups[0][1],
             groups[0][0]
         )
     )
-
     root["graphs"]["left"]["g2"].update(
         build_graph_panel(
             groups[1][1],
             groups[1][0]
         )
     )
-
     root["graphs"]["right"]["g3"].update(
         build_graph_panel(
             groups[2][1],
             groups[2][0]
         )
     )
-
     root["graphs"]["right"]["g4"].update(
         build_graph_panel(
             groups[3][1],
@@ -859,15 +799,11 @@ def build_layout(results: list[CheckResult]) -> Layout:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-
     console = Console()
-
     console.print(
         f"\n[{C_TITLE}]🦐 Initialising Shrimp Node…[/{C_TITLE}]\n"
     )
-
     time.sleep(0.4)
-
     results = _run_checks()
 
     try:
@@ -880,23 +816,18 @@ def main() -> None:
         ) as live:
 
             while True:
-
                 results = _run_checks()
-
                 live.update(
                     build_layout(results)
                 )
-
                 time.sleep(
                     REFRESH_INTERVAL
                 )
 
     except KeyboardInterrupt:
-
         console.print(
             f"\n[{C_DIM}]🦐 Monitor stopped.[/{C_DIM}]\n"
         )
-
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
